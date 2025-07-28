@@ -7,7 +7,7 @@ from model.modeling_llada import LLaDAModelLM
 import time
 import re
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'cuda:4' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {device}")
 
 # Load model and tokenizer
@@ -793,4 +793,4 @@ def create_chatbot_demo():
 # Launch the demo
 if __name__ == "__main__":
     demo = create_chatbot_demo()
-    demo.queue().launch(share=True)
+    demo.queue().launch(server_port=10086, share=True)
