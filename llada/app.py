@@ -6,73 +6,39 @@ from transformers import AutoTokenizer
 from model.modeling_llada import LLaDAModelLM
 import time
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
-device = 'cuda:4' if torch.cuda.is_available() else 'cpu'
-print(f"Using device: {device}")
+# 在文件开头添加颜色常量
+MASK_COLOR = "#FF4444"  # 红色用于mask
+TOKEN_COLOR = "#44FF44"  # 绿色用于已解码的token
+
+# 检查可用的GPU
+device_baseline = 'cuda:4' if torch.cuda.is_available() and torch.cuda.device_count() > 4 else 'cuda' if torch.cuda.is_available() else 'cpu'
+device_accelerated = 'cuda:5' if torch.cuda.is_available() and torch.cuda.device_count() > 5 else 'cuda' if torch.cuda.is_available() else 'cpu'
+
+print(f"Baseline model using device: {device_baseline}")
+print(f"Accelerated model using device: {device_accelerated}")
 
 # Load model and tokenizer
 tokenizer = AutoTokenizer.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True)
-model = LLaDAModelLM.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True, 
-                                  torch_dtype=torch.bfloat16).to(device)
+
+# 加载两个模型实例到不同的GPU
+model_baseline = LLaDAModelLM.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True, 
+                                  torch_dtype=torch.bfloat16).to(device_baseline)
+
+model_accelerated = LLaDAModelLM.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True, 
+                                  torch_dtype=torch.bfloat16).to(device_accelerated)
 
 # Constants
 MASK_TOKEN = "[MASK]"
 MASK_ID = 126336  # The token ID of [MASK] in LLaDA
-question_gsm8k = '''Question: Jen and Tyler are gymnasts practicing flips. Jen is practicing the triple-flip while Tyler is practicing the double-flip. Jen did sixteen triple-flips during practice. Tyler flipped in the air half the number of times Jen did. How many double-flips did Tyler do?
-Answer: Jen did 16 triple-flips, so she did 16 * 3 = <<16*3=48>>48 flips.
-Tyler did half the number of flips, so he did 48 / 2 = <<48/2=24>>24 flips.
-A double flip has two flips, so Tyler did 24 / 2 = <<24/2=12>>12 double-flips.
-#### 12
+question_ai = '''Write a piece of code to implement quick sort.'''
+# question_poem = '''莲动下渔舟上一句是什么，介绍一下这首诗。'''
 
-Question: Four people in a law firm are planning a party. Mary will buy a platter of pasta for $20 and a loaf of bread for $2. Elle and Andrea will split the cost for buying 4 cans of soda which cost $1.50 each, and chicken wings for $10. Joe will buy a cake that costs $5. How much more will Mary spend than the rest of the firm put together?
-Answer: Mary will spend $20 + $2 = $<<20+2=22>>22.
-Elle and Andrea will spend $1.5 x 4 = $<<1.5*4=6>>6 for the soda.
-Elle and Andrea will spend $6 + $10 = $<<6+10=16>>16 for the soda and chicken wings.
-Elle, Andrea, and Joe together will spend $16 + $5 = $<<16+5=21>>21.
-So, Mary will spend $22 - $21 = $<<22-21=1>>1 more than all of them combined.
-#### 1
+question_gsm8k = '''Question: Skyler has 100 hats on his hand with the colors red, blue, and white. Half of the hats are red, 3/5 of the remaining hats are blue, and the rest are white. How many white hats does Skyler have?'''
 
-Question: A charcoal grill burns fifteen coals to ash every twenty minutes of grilling. The grill ran for long enough to burn three bags of coals. Each bag of coal contains 60 coals. How long did the grill run?
-Answer: The grill burned 3 * 60 = <<3*60=180>>180 coals.
-It takes 20 minutes to burn 15 coals, so the grill ran for 180 / 15 * 20 = <<180/15*20=240>>240 minutes.
-#### 240
-
-Question: A bear is preparing to hibernate for the winter and needs to gain 1000 pounds. At the end of summer, the bear feasts on berries and small woodland animals. During autumn, it devours acorns and salmon. It gained a fifth of the weight it needed from berries during summer, and during autumn, it gained twice that amount from acorns. Salmon made up half of the remaining weight it had needed to gain. How many pounds did it gain eating small animals?
-Answer: The bear gained 1 / 5 * 1000 = <<1/5*1000=200>>200 pounds from berries.
-It gained 2 * 200 = <<2*200=400>>400 pounds from acorns.
-It still needed 1000 - 200 - 400 = <<1000-200-400=400>>400 pounds.
-Thus, it gained 400 / 2 = <<400/2=200>>200 pounds from salmon.
-Therefore, the bear gained 400 - 200 = <<400-200=200>>200 pounds from small animals.
-#### 200
-
-Question: Brendan can cut 8 yards of grass per day, he bought a lawnmower and it helped him to cut more yards by Fifty percent per day. How many yards will Brendan be able to cut after a week?
-Answer: The additional yard Brendan can cut after buying the lawnmower is 8 x 0.50 = <<8*0.50=4>>4 yards.
-So, the total yards he can cut with the lawnmower is 8 + 4 = <<8+4=12>>12.
-Therefore, the total number of yards he can cut in a week is 12 x 7 = <<12*7=84>>84 yards.
-#### 84
-
-Question: Skyler has 100 hats on his hand with the colors red, blue, and white. Half of the hats are red, 3/5 of the remaining hats are blue, and the rest are white. How many white hats does Skyler have?'''
-
-def parse_constraints(constraints_text):
-    """Parse constraints in format: 'position:word, position:word, ...'"""
-    constraints = {}
-    if not constraints_text:
-        return constraints
-        
-    parts = constraints_text.split(',')
-    for part in parts:
-        if ':' not in part:
-            continue
-        pos_str, word = part.split(':', 1)
-        try:
-            pos = int(pos_str.strip())
-            word = word.strip()
-            if word and pos >= 0:
-                constraints[pos] = word
-        except ValueError:
-            continue
-    
-    return constraints
+# Removed parse_constraints function - no longer needed
 
 def format_chat_history(history):
     """
@@ -126,8 +92,26 @@ def get_num_transfer_tokens(mask_index, steps):
 
     return num_transfer_tokens
 
+# 添加线程生成函数
+def generate_baseline_thread(messages, gen_length, steps, temperature, block_length, remasking):
+    """在线程中生成baseline模型的响应"""
+    with torch.no_grad():
+        return generate_response_with_visualization(
+            model_baseline, tokenizer, device_baseline,
+            messages, gen_length, steps, temperature, block_length, remasking
+        )
+
+def generate_accelerated_thread(messages, gen_length, steps, temperature, block_length, remasking, threshold):
+    """在线程中生成加速模型的响应"""
+    with torch.no_grad():
+        return generate_response_with_visualization_cache_and_parallel(
+            model_accelerated, tokenizer, device_accelerated,
+            messages, gen_length, steps, temperature, block_length, remasking, threshold
+        )
+
+@torch.no_grad()
 def generate_response_with_visualization_cache_and_parallel(model, tokenizer, device, messages, gen_length=64, steps=32, 
-                                         constraints=None, temperature=0.0, block_length=32,
+                                         temperature=0.0, block_length=32,
                                          remasking='low_confidence', threshold=0.9):
     """
     Generate text with LLaDA model with visualization using the same sampling as in generate.py
@@ -136,7 +120,6 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
         messages: List of message dictionaries with 'role' and 'content'
         gen_length: Length of text to generate
         steps: Number of denoising steps
-        constraints: Dictionary mapping positions to words
         temperature: Sampling temperature
         block_length: Block length for semi-autoregressive generation
         remasking: Remasking strategy ('low_confidence' or 'random')
@@ -144,17 +127,6 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
     Returns:
         List of visualization states showing the progression and final text
     """
-    
-    # Process constraints
-    if constraints is None:
-        constraints = {}
-        
-    # Convert any string constraints to token IDs
-    processed_constraints = {}
-    for pos, word in constraints.items():
-        tokens = tokenizer.encode(" " + word, add_special_tokens=False)
-        for i, token_id in enumerate(tokens):
-            processed_constraints[pos + i] = token_id
     
     # Prepare the prompt using chat template
     chat_input = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
@@ -172,14 +144,10 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
     visualization_states = []
     
     # Add initial state (all masked)
-    initial_state = [(MASK_TOKEN, "#444444") for _ in range(gen_length)]
+    initial_state = [(MASK_TOKEN, MASK_COLOR) for _ in range(gen_length)]
     visualization_states.append(initial_state)
     
-    # Apply constraints to the initial state
-    for pos, token_id in processed_constraints.items():
-        absolute_pos = prompt_length + pos
-        if absolute_pos < x.shape[1]:
-            x[:, absolute_pos] = token_id
+    # Constraints functionality removed
     
     # Ensure block_length is valid
     if block_length > gen_length:
@@ -225,11 +193,11 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
             
             if x[0, pos] == MASK_ID:
                 # Still masked
-                current_state.append((MASK_TOKEN, "#444444"))  # Dark gray for masks
+                current_state.append((MASK_TOKEN, MASK_COLOR))  # 红色用于mask
             else:
                 # Previously revealed
                 token = tokenizer.decode([x[0, pos].item()], skip_special_tokens=True)
-                current_state.append((token, "#6699CC"))  # Light blue
+                current_state.append((token, TOKEN_COLOR))  # 绿色用于已解码的token
         
         visualization_states.append(current_state)
         i = 1
@@ -252,11 +220,11 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
                 
                 if x[0, pos] == MASK_ID:
                     # Still masked
-                    current_state.append((MASK_TOKEN, "#444444"))  # Dark gray for masks
+                    current_state.append((MASK_TOKEN, MASK_COLOR))  # 红色用于mask
                 else:
                     # Previously revealed
                     token = tokenizer.decode([x[0, pos].item()], skip_special_tokens=True)
-                    current_state.append((token, "#6699CC"))  # Light blue
+                    current_state.append((token, TOKEN_COLOR))  # 绿色用于已解码的token
             
             visualization_states.append(current_state)
             if (x[:, current_block_start:current_block_end] == MASK_ID).sum() == 0:
@@ -300,8 +268,9 @@ def get_transfer_index(logits, temperature, remasking, mask_index, x, num_transf
                     transfer_index[j, select_index[k]] = False
     return x0, transfer_index
 
+@torch.no_grad()
 def generate_response_with_visualization(model, tokenizer, device, messages, gen_length=64, steps=32, 
-                                         constraints=None, temperature=0.0, block_length=32,
+                                         temperature=0.0, block_length=32,
                                          remasking='low_confidence'):
     """
     Generate text with LLaDA model with visualization using the same sampling as in generate.py
@@ -310,7 +279,6 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
         messages: List of message dictionaries with 'role' and 'content'
         gen_length: Length of text to generate
         steps: Number of denoising steps
-        constraints: Dictionary mapping positions to words
         temperature: Sampling temperature
         block_length: Block length for semi-autoregressive generation
         remasking: Remasking strategy ('low_confidence' or 'random')
@@ -318,17 +286,6 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
     Returns:
         List of visualization states showing the progression and final text
     """
-    
-    # Process constraints
-    if constraints is None:
-        constraints = {}
-        
-    # Convert any string constraints to token IDs
-    processed_constraints = {}
-    for pos, word in constraints.items():
-        tokens = tokenizer.encode(" " + word, add_special_tokens=False)
-        for i, token_id in enumerate(tokens):
-            processed_constraints[pos + i] = token_id
     
     # Prepare the prompt using chat template
     chat_input = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
@@ -346,14 +303,10 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
     visualization_states = []
     
     # Add initial state (all masked)
-    initial_state = [(MASK_TOKEN, "#444444") for _ in range(gen_length)]
+    initial_state = [(MASK_TOKEN, MASK_COLOR) for _ in range(gen_length)]
     visualization_states.append(initial_state)
     
-    # Apply constraints to the initial state
-    for pos, token_id in processed_constraints.items():
-        absolute_pos = prompt_length + pos
-        if absolute_pos < x.shape[1]:
-            x[:, absolute_pos] = token_id
+    # Constraints functionality removed
     
     # Mark prompt positions to exclude them from masking during classifier-free guidance
     prompt_index = (x != MASK_ID)
@@ -441,11 +394,7 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
             # Apply the selected tokens
             x = torch.where(transfer_index, x0, x)
             
-            # Ensure constraints are maintained
-            for pos, token_id in processed_constraints.items():
-                absolute_pos = prompt_length + pos
-                if absolute_pos < x.shape[1]:
-                    x[:, absolute_pos] = token_id
+            # Constraints functionality removed
             
             # Create visualization state only for the response part
             current_state = []
@@ -454,11 +403,11 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
                 
                 if x[0, pos] == MASK_ID:
                     # Still masked
-                    current_state.append((MASK_TOKEN, "#444444"))  # Dark gray for masks
+                    current_state.append((MASK_TOKEN, MASK_COLOR))  # 红色用于mask
                 else:
                     # Previously revealed
                     token = tokenizer.decode([x[0, pos].item()], skip_special_tokens=True)
-                    current_state.append((token, "#6699CC"))  # Light blue
+                    current_state.append((token, TOKEN_COLOR))  # 绿色用于已解码的token
             
             visualization_states.append(current_state)
     
@@ -502,12 +451,12 @@ def create_chatbot_demo():
                 )
                 generation_time_copy = gr.Textbox(
                     label="Generation Time",
-                    value="0.00s",
+                    value="wait for generation",
                     interactive=False
                 )
                 throughput_copy = gr.Textbox(
                     label="Generation Speed",
-                    value="0.00 tokens/s",
+                    value="wait for generation",
                     interactive=False
                 )
         
@@ -525,15 +474,15 @@ def create_chatbot_demo():
                 )
                 generation_time = gr.Textbox(
                     label="Generation Time",
-                    value="0.00s",
+                    value="wait for generation",
                     interactive=False
                 )
                 throughput = gr.Textbox(
                     label="Generation Speed",
-                    value="0.00 tokens/s",
+                    value="wait for generation",
                     interactive=False
                 )
-
+                
         # Move input area below the duplicate conversation interface
         with gr.Group():
             user_input = gr.Textbox(
@@ -542,14 +491,10 @@ def create_chatbot_demo():
                 show_label=False
             )
             send_btn = gr.Button("Send")
-            constraints_input = gr.Textbox(
-                label="Word Constraints", 
-                info="This model allows for placing specific words at specific positions using 'position:word' format. Example: 1st word once, 6th word 'upon' and 11th word 'time', would be: '0:Once, 5:upon, 10:time",
-                placeholder="0:Once, 5:upon, 10:time",
-                value=""
-            )
             gr.Examples(
                 examples=[
+                    [question_ai],
+                    # [question_poem],
                     [question_gsm8k]
                 ],
                 inputs=user_input,
@@ -610,14 +555,14 @@ def create_chatbot_demo():
             history.append([message, response])
             return history
             
-        def user_message_submitted(message, history_baseline, history_cache, gen_length, steps, constraints, delay):
+        def user_message_submitted(message, history_baseline, history_cache, gen_length, steps, delay):
             """Process a submitted user message"""
             # Skip empty messages
             if not message.strip():
                 # Return current state unchanged
                 history_baseline_for_display = history_baseline.copy()
                 history_cache_for_display = history_cache.copy()
-                return history_baseline, history_cache, history_baseline_for_display, history_cache_for_display, "", [], [], "", "0.00s", "0.00 tokens/s", "0.00s", "0.00 tokens/s"
+                return history_baseline, history_cache, history_baseline_for_display, history_cache_for_display, "", [], [], "", "wait for generation", "wait for generation", "wait for generation", "wait for generation"
                 
             # Add user message to both histories
             history_baseline = add_message(history_baseline, message, None)
@@ -631,12 +576,12 @@ def create_chatbot_demo():
             message_out = ""
             
             # Return immediately to update UI with user message
-            return history_baseline, history_cache, history_baseline_for_display, history_cache_for_display, message_out, [], [], "", "0.00s", "0.00 tokens/s", "0.00s", "0.00 tokens/s"
+            return history_baseline, history_cache, history_baseline_for_display, history_cache_for_display, message_out, [], [], "", "processing...", "processing...", "processing...", "processing..."
             
-        def bot_response(history_baseline, history_cache, gen_length, steps, constraints, delay, temperature, block_length, remasking, threshold):
-            """Generate bot response for the latest message"""
-            if not history_baseline or not history_cache:
-                return history_baseline, history_cache, [], [], "", "0.00s", "0.00 tokens/s", "0.00s", "0.00 tokens/s"
+        def baseline_response(history_baseline, gen_length, steps, delay, temperature, block_length, remasking):
+            """Generate baseline model response independently"""
+            if not history_baseline:
+                return history_baseline, [], "", "wait for generation", "wait for generation"
                 
             # Get the last user message
             last_user_message = history_baseline[-1][0]
@@ -648,87 +593,100 @@ def create_chatbot_demo():
                 # Add the last user message
                 messages.append({"role": "user", "content": last_user_message})
                 
-                # Parse constraints
-                parsed_constraints = parse_constraints(constraints)
-                
-                # Start timing for baseline
+                # Start timing
                 start_time = time.time()
                 
-                # Generate response with visualization for baseline
-                vis_states, response_text = generate_response_with_visualization(
-                    model, tokenizer, device, 
-                    messages, 
-                    gen_length=gen_length, 
-                    steps=steps,
-                    constraints=parsed_constraints,
-                    temperature=temperature,
-                    block_length=block_length,
-                    remasking=remasking,
-                )
+                # Generate with baseline model
+                with torch.no_grad():
+                    vis_states, response_text = generate_response_with_visualization(
+                        model_baseline, tokenizer, device_baseline,
+                        messages, gen_length, steps, temperature, block_length, remasking
+                    )
                 
-                # Calculate generation time and throughput for baseline
-                generation_time = time.time() - start_time
-                generation_time_str = f"{generation_time:.2f}s"
+                baseline_complete_time = time.time() - start_time
+                generation_time_str = f"{baseline_complete_time:.2f}s"
                 
-                # Calculate throughput for baseline
+                # Calculate throughput
                 response_tokens = tokenizer.encode(response_text, add_special_tokens=False)
                 num_tokens = len(response_tokens)
-                throughput = num_tokens / generation_time if generation_time > 0 else 0
+                throughput = num_tokens / baseline_complete_time if baseline_complete_time > 0 else 0
                 throughput_str = f"{throughput:.2f} tokens/s"
                 
-                # Start timing for cache version
-                cache_start_time = time.time()
-                cache_vis_states, cache_response_text = generate_response_with_visualization_cache_and_parallel(
-                    model, tokenizer, device, 
-                    messages, 
-                    gen_length=gen_length, 
-                    steps=steps,
-                    constraints=parsed_constraints,
-                    temperature=temperature,
-                    block_length=block_length,
-                    remasking=remasking,
-                    threshold=threshold
-                )
-                cache_generation_time = time.time() - cache_start_time
-                cache_generation_time_str = f"{cache_generation_time:.2f}s"
-                cache_response_tokens = tokenizer.encode(cache_response_text, add_special_tokens=False)
-                cache_num_tokens = len(cache_response_tokens)
-                cache_throughput = cache_num_tokens / cache_generation_time if cache_generation_time > 0 else 0
-                cache_throughput_str = f"{cache_throughput:.2f} tokens/s"
-                
-                # Update both histories with their respective responses
+                # Update history
                 history_baseline[-1][1] = response_text
-                history_cache[-1][1] = cache_response_text
                 
-                # Return the initial state immediately
-                yield history_baseline, history_cache, vis_states[0], cache_vis_states[0], response_text, generation_time_str, throughput_str, cache_generation_time_str, cache_throughput_str
+                # Output results
+                yield history_baseline, vis_states[0], response_text, generation_time_str, throughput_str
                 
-                # Then animate through visualization states
+                # Animate generation process
                 for state in vis_states[1:]:
                     time.sleep(delay)
-                    yield history_baseline, history_cache, state, cache_vis_states[0], response_text, generation_time_str, throughput_str, cache_generation_time_str, cache_throughput_str
-                
-                for state in cache_vis_states[1:]:
-                    time.sleep(delay)
-                    yield history_baseline, history_cache, vis_states[-1], state, response_text, generation_time_str, throughput_str, cache_generation_time_str, cache_throughput_str
+                    yield history_baseline, state, response_text, generation_time_str, throughput_str
                     
             except Exception as e:
                 error_msg = f"Error: {str(e)}"
                 print(error_msg)
-                
-                # Show error in visualization
                 error_vis = [(error_msg, "red")]
+                yield history_baseline, error_vis, error_msg, "Error", "Error"
+        
+        def accelerated_response(history_cache, gen_length, steps, delay, temperature, block_length, remasking, threshold):
+            """Generate accelerated model response independently"""
+            if not history_cache:
+                return history_cache, [], "", "wait for generation", "wait for generation"
                 
-                # Don't update histories with error
-                yield history_baseline, history_cache, error_vis, error_vis, error_msg, "0.00s", "0.00 tokens/s", "0.00s", "0.00 tokens/s"
+            # Get the last user message
+            last_user_message = history_cache[-1][0]
+            
+            try:
+                # Format all messages except the last one (which has no response yet)
+                messages = format_chat_history(history_cache[:-1])
+                
+                # Add the last user message
+                messages.append({"role": "user", "content": last_user_message})
+                
+                # Start timing
+                start_time = time.time()
+                
+                # Generate with accelerated model
+                with torch.no_grad():
+                    cache_vis_states, cache_response_text = generate_response_with_visualization_cache_and_parallel(
+                        model_accelerated, tokenizer, device_accelerated,
+                        messages, gen_length, steps, temperature, block_length, remasking, threshold
+                    )
+                
+                accelerated_complete_time = time.time() - start_time
+                cache_generation_time_str = f"{accelerated_complete_time:.2f}s"
+                
+                # Calculate throughput
+                cache_response_tokens = tokenizer.encode(cache_response_text, add_special_tokens=False)
+                cache_num_tokens = len(cache_response_tokens)
+                cache_throughput = cache_num_tokens / accelerated_complete_time if accelerated_complete_time > 0 else 0
+                cache_throughput_str = f"{cache_throughput:.2f} tokens/s"
+                
+                # Update history
+                history_cache[-1][1] = cache_response_text
+                
+                # Output results
+                yield history_cache, cache_vis_states[0], cache_response_text, cache_generation_time_str, cache_throughput_str
+                
+                # Animate generation process
+                for state in cache_vis_states[1:]:
+                    time.sleep(delay)
+                    yield history_cache, state, cache_response_text, cache_generation_time_str, cache_throughput_str
+                    
+            except Exception as e:
+                error_msg = f"Error: {str(e)}"
+                print(error_msg)
+                error_vis = [(error_msg, "red")]
+                yield history_cache, error_vis, error_msg, "Error", "Error"
         
         def clear_conversation():
             """Clear the conversation history"""
             empty_history = []
             empty_response = ""
             empty_vis = []
-            time_str = "0.00s"
-            throughput_str = "0.00 tokens/s"
+            time_str = "wait for generation"
+            throughput_str = "wait for generation"
             
             return (
                 empty_history,  # chat_history_baseline
@@ -757,37 +715,54 @@ def create_chatbot_demo():
         # Step 1: Add user message to history and update UI
         msg_submit = user_input.submit(
             fn=user_message_submitted,
-            inputs=[user_input, chat_history_baseline, chat_history_cache, gen_length, steps, constraints_input, visualization_delay],
+            inputs=[user_input, chat_history_baseline, chat_history_cache, gen_length, steps, visualization_delay],
             outputs=[chat_history_baseline, chat_history_cache, chatbot_ui, chatbot_ui_copy, user_input, output_vis, output_vis_copy, current_response, generation_time, throughput, generation_time_copy, throughput_copy]
         )
         
         # Also connect the send button
         send_click = send_btn.click(
             fn=user_message_submitted,
-            inputs=[user_input, chat_history_baseline, chat_history_cache, gen_length, steps, constraints_input, visualization_delay],
+            inputs=[user_input, chat_history_baseline, chat_history_cache, gen_length, steps, visualization_delay],
             outputs=[chat_history_baseline, chat_history_cache, chatbot_ui, chatbot_ui_copy, user_input, output_vis, output_vis_copy, current_response, generation_time, throughput, generation_time_copy, throughput_copy]
         )
         
-        # Step 2: Generate bot response
-        # This happens after the user message is displayed
+        # Step 2: Generate bot responses independently
+        # Baseline model response
         msg_submit.then(
-            fn=bot_response,
+            fn=baseline_response,
             inputs=[
-                chat_history_baseline, chat_history_cache, gen_length, steps, constraints_input, 
-                visualization_delay, temperature, block_length,
-                remasking_strategy, threshold
+                chat_history_baseline, gen_length, steps, 
+                visualization_delay, temperature, block_length, remasking_strategy
             ],
-            outputs=[chatbot_ui, chatbot_ui_copy, output_vis, output_vis_copy, current_response, generation_time, throughput, generation_time_copy, throughput_copy]
+            outputs=[chatbot_ui, output_vis, current_response, generation_time, throughput]
         )
         
         send_click.then(
-            fn=bot_response,
+            fn=baseline_response,
             inputs=[
-                chat_history_baseline, chat_history_cache, gen_length, steps, constraints_input, 
-                visualization_delay, temperature, block_length,
-                remasking_strategy, threshold
+                chat_history_baseline, gen_length, steps, 
+                visualization_delay, temperature, block_length, remasking_strategy
             ],
-            outputs=[chatbot_ui, chatbot_ui_copy, output_vis, output_vis_copy, current_response, generation_time, throughput, generation_time_copy, throughput_copy]
+            outputs=[chatbot_ui, output_vis, current_response, generation_time, throughput]
+        )
+        
+        # Accelerated model response
+        msg_submit.then(
+            fn=accelerated_response,
+            inputs=[
+                chat_history_cache, gen_length, steps, 
+                visualization_delay, temperature, block_length, remasking_strategy, threshold
+            ],
+            outputs=[chatbot_ui_copy, output_vis_copy, current_response, generation_time_copy, throughput_copy]
+        )
+        
+        send_click.then(
+            fn=accelerated_response,
+            inputs=[
+                chat_history_cache, gen_length, steps, 
+                visualization_delay, temperature, block_length, remasking_strategy, threshold
+            ],
+            outputs=[chatbot_ui_copy, output_vis_copy, current_response, generation_time_copy, throughput_copy]
         )
         
     return demo
@@ -795,4 +770,4 @@ def create_chatbot_demo():
 # Launch the demo
 if __name__ == "__main__":
     demo = create_chatbot_demo()
-    demo.queue().launch(server_port=10086, share=True)
+    demo.queue().launch(server_port=10086)
