@@ -34,8 +34,8 @@ model_accelerated = LLaDAModelLM.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', tr
 MASK_TOKEN = "[MASK]"
 MASK_ID = 126336  # The token ID of [MASK] in LLaDA
 question_ai = '''Write a piece of code to implement quick sort.'''
-# question_poem = '''莲动下渔舟上一句是什么，介绍一下这首诗。'''
-
+question_poem = '''低头思故乡上一句是什么，介绍一下这首诗。'''
+question_math = '''A deep-sea monster rises from the waters once every hundred years to feast on a ship and sate its hunger. Over three hundred years, it has consumed 847 people. Ships have been built larger over time, so each new ship has twice as many people as the last ship. How many people were on the ship the monster ate in the first hundred years?'''
 question_gsm8k = '''Question: Skyler has 100 hats on his hand with the colors red, blue, and white. Half of the hats are red, 3/5 of the remaining hats are blue, and the rest are white. How many white hats does Skyler have?'''
 
 # Removed parse_constraints function - no longer needed
@@ -224,6 +224,8 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
                 else:
                     # Previously revealed
                     token = tokenizer.decode([x[0, pos].item()], skip_special_tokens=True)
+                    # 将换行符替换为可见字符，保留空格用于自动换行
+                    token = token.replace('\n', '\\n').replace('\r', '\\r')
                     current_state.append((token, TOKEN_COLOR))  # 绿色用于已解码的token
             
             visualization_states.append(current_state)
@@ -407,6 +409,8 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
                 else:
                     # Previously revealed
                     token = tokenizer.decode([x[0, pos].item()], skip_special_tokens=True)
+                    # 将换行符替换为可见字符，保留空格用于自动换行
+                    token = token.replace('\n', '\\n').replace('\r', '\\r')
                     current_state.append((token, TOKEN_COLOR))  # 绿色用于已解码的token
             
             visualization_states.append(current_state)
@@ -427,6 +431,16 @@ css = '''
     word-break: break-word !important;
     box-sizing: border-box !important;
 }
+/* HighlightedText允许自动换行并设置固定高度 */
+.highlighted-text-container {
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    height: 200px !important;
+    overflow-y: auto !important;
+}
+.generating {
+    border: none;
+}
 '''
 def create_chatbot_demo():
     with gr.Blocks(css=css) as demo:
@@ -440,48 +454,54 @@ def create_chatbot_demo():
         # UI COMPONENTS
                 
         # Duplicate conversation interface
+        gr.Markdown("## Fast-dLLM Accelerated")
         with gr.Row():
-            with gr.Column(scale=3):
-                chatbot_ui_copy = gr.Chatbot(label="Conversation (Accelerated)", height=500)
             with gr.Column(scale=2):
+                chatbot_ui_copy = gr.Chatbot(label="Conversation (Fast-dLLM Accelerated)", height=300)
+            with gr.Column(scale=2):
+                with gr.Row():
+                    generation_time_copy = gr.Textbox(
+                        label="Generation Time",
+                        value="wait for generation",
+                        interactive=False
+                    )
+                    throughput_copy = gr.Textbox(
+                        label="Generation Speed",
+                        value="wait for generation",
+                        interactive=False
+                    )
                 output_vis_copy = gr.HighlightedText(
                     label="Denoising Process Visualization",
                     combine_adjacent=False,
                     show_legend=True,
-                )
-                generation_time_copy = gr.Textbox(
-                    label="Generation Time",
-                    value="wait for generation",
-                    interactive=False
-                )
-                throughput_copy = gr.Textbox(
-                    label="Generation Speed",
-                    value="wait for generation",
-                    interactive=False
+                    elem_classes=["highlighted-text-container"]
                 )
         
         # Add separator line
         gr.Markdown("---")
-        
+        gr.Markdown("## LLaDA Baseline")
         with gr.Row():
-            with gr.Column(scale=3):
-                chatbot_ui = gr.Chatbot(label="Conversation", height=500)
             with gr.Column(scale=2):
+                chatbot_ui = gr.Chatbot(label="Conversation", height=300)
+            with gr.Column(scale=2):
+                with gr.Row():
+                    generation_time = gr.Textbox(
+                        label="Generation Time",
+                        value="wait for generation",
+                        interactive=False
+                    )
+                    throughput = gr.Textbox(
+                        label="Generation Speed",
+                        value="wait for generation",
+                        interactive=False
+                    )
                 output_vis = gr.HighlightedText(
                     label="Denoising Process Visualization",
                     combine_adjacent=False,
                     show_legend=True,
+                    elem_classes=["highlighted-text-container"]
                 )
-                generation_time = gr.Textbox(
-                    label="Generation Time",
-                    value="wait for generation",
-                    interactive=False
-                )
-                throughput = gr.Textbox(
-                    label="Generation Speed",
-                    value="wait for generation",
-                    interactive=False
-                )
+
                 
         # Move input area below the duplicate conversation interface
         with gr.Group():
@@ -494,8 +514,9 @@ def create_chatbot_demo():
             gr.Examples(
                 examples=[
                     [question_ai],
-                    # [question_poem],
-                    [question_gsm8k]
+                    [question_poem],
+                    [question_gsm8k],
+                    [question_math],
                 ],
                 inputs=user_input,
                 label="Example Inputs"
