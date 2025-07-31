@@ -124,8 +124,8 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
         block_length: Block length for semi-autoregressive generation
         remasking: Remasking strategy ('low_confidence' or 'random')
         
-    Returns:
-        List of visualization states showing the progression and final text
+    Yields:
+        Visualization states showing the progression and final text
     """
     
     # Prepare the prompt using chat template
@@ -140,12 +140,11 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
     x = torch.full((1, prompt_length + gen_length), MASK_ID, dtype=torch.long).to(device)
     x[:, :prompt_length] = input_ids.clone()
     
-    # Initialize visualization states for the response part
-    visualization_states = []
-    
     # Add initial state (all masked)
-    initial_state = [(MASK_TOKEN, MASK_COLOR) for _ in range(gen_length)]
-    visualization_states.append(initial_state)
+    initial_state = []
+    for i in range(gen_length):
+        initial_state.append((MASK_TOKEN, MASK_COLOR))
+    yield initial_state
     
     # Constraints functionality removed
     
@@ -186,7 +185,8 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
                 new_past_key_values[i] += (past_key_values[i][j][:, :, :current_block_start],)
         
         past_key_values = new_past_key_values
-        # Create visualization state only for the response part
+        
+        # Create and yield visualization state
         current_state = []
         for i in range(gen_length):
             pos = prompt_length + i  # Absolute position in the sequence
@@ -199,7 +199,8 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
                 token = tokenizer.decode([x[0, pos].item()], skip_special_tokens=True)
                 current_state.append((token, TOKEN_COLOR))  # 绿色用于已解码的token
         
-        visualization_states.append(current_state)
+        yield current_state
+        
         i = 1
         while True:
             mask_index = (x[:, current_block_start:] == MASK_ID)
@@ -213,7 +214,8 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
             x0, transfer_index = get_transfer_index(logits, temperature, remasking, mask_index, 
                                             x[:, current_block_start:], num_transfer_tokens[:, i] if threshold is None else None, threshold)
             x[:, current_block_start:][transfer_index] = x0[transfer_index]
-            # Create visualization state only for the response part
+            
+            # Create and yield visualization state
             current_state = []
             for i in range(gen_length):
                 pos = prompt_length + i  # Absolute position in the sequence
@@ -228,7 +230,8 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
                     token = token.replace('\n', '\\n').replace('\r', '\\r')
                     current_state.append((token, TOKEN_COLOR))  # 绿色用于已解码的token
             
-            visualization_states.append(current_state)
+            yield current_state
+            
             if (x[:, current_block_start:current_block_end] == MASK_ID).sum() == 0:
                 break
             i += 1
@@ -239,7 +242,8 @@ def generate_response_with_visualization_cache_and_parallel(model, tokenizer, de
                                skip_special_tokens=True,
                                clean_up_tokenization_spaces=True)
     
-    return visualization_states, final_text
+    # Yield the final text as a special marker
+    yield final_text
 
 
 def get_transfer_index(logits, temperature, remasking, mask_index, x, num_transfer_tokens, threshold=None):
@@ -285,8 +289,8 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
         block_length: Block length for semi-autoregressive generation
         remasking: Remasking strategy ('low_confidence' or 'random')
         
-    Returns:
-        List of visualization states showing the progression and final text
+    Yields:
+        Visualization states showing the progression and final text
     """
     
     # Prepare the prompt using chat template
@@ -301,12 +305,11 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
     x = torch.full((1, prompt_length + gen_length), MASK_ID, dtype=torch.long).to(device)
     x[:, :prompt_length] = input_ids.clone()
     
-    # Initialize visualization states for the response part
-    visualization_states = []
-    
     # Add initial state (all masked)
-    initial_state = [(MASK_TOKEN, MASK_COLOR) for _ in range(gen_length)]
-    visualization_states.append(initial_state)
+    initial_state = []
+    for i in range(gen_length):
+        initial_state.append((MASK_TOKEN, MASK_COLOR))
+    yield initial_state
     
     # Constraints functionality removed
     
@@ -398,7 +401,7 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
             
             # Constraints functionality removed
             
-            # Create visualization state only for the response part
+            # Create and yield visualization state
             current_state = []
             for i in range(gen_length):
                 pos = prompt_length + i  # Absolute position in the sequence
@@ -413,7 +416,7 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
                     token = token.replace('\n', '\\n').replace('\r', '\\r')
                     current_state.append((token, TOKEN_COLOR))  # 绿色用于已解码的token
             
-            visualization_states.append(current_state)
+            yield current_state
     
     # Extract final text (just the assistant's response)
     response_tokens = x[0, prompt_length:]
@@ -421,7 +424,8 @@ def generate_response_with_visualization(model, tokenizer, device, messages, gen
                                skip_special_tokens=True,
                                clean_up_tokenization_spaces=True)
     
-    return visualization_states, final_text
+    # Yield the final text as a special marker
+    yield final_text
 
 css = '''
 .category-legend{display:none}
@@ -452,7 +456,19 @@ def create_chatbot_demo():
         chat_history_cache = gr.State([])
         
         # UI COMPONENTS
-                
+        
+        # Input area - moved above Fast-dLLM Accelerated section
+        with gr.Group():
+            with gr.Row():
+                user_input = gr.Textbox(
+                    label="Your Message", 
+                    placeholder="Type your message here...",
+                    show_label=False,
+                    scale=8
+                )
+                send_btn = gr.Button("Send", scale=1)
+                clear_btn = gr.Button("Clear Conversation", scale=1)
+        
         # Duplicate conversation interface
         gr.Markdown("## Fast-dLLM Accelerated")
         with gr.Row():
@@ -501,26 +517,18 @@ def create_chatbot_demo():
                     show_legend=True,
                     elem_classes=["highlighted-text-container"]
                 )
-
-                
-        # Move input area below the duplicate conversation interface
-        with gr.Group():
-            user_input = gr.Textbox(
-                label="Your Message", 
-                placeholder="Type your message here...",
-                show_label=False
-            )
-            send_btn = gr.Button("Send")
-            gr.Examples(
-                examples=[
-                    [question_ai],
-                    [question_poem],
-                    [question_gsm8k],
-                    [question_math],
-                ],
-                inputs=user_input,
-                label="Example Inputs"
-            )
+        
+        # Examples moved below the conversation interfaces
+        gr.Examples(
+            examples=[
+                [question_ai],
+                [question_poem],
+                [question_gsm8k],
+                [question_math],
+            ],
+            inputs=user_input,
+            label="Example Inputs"
+        )
         
         # Advanced generation settings
         with gr.Accordion("Generation Settings", open=False):
@@ -552,11 +560,7 @@ def create_chatbot_demo():
                     value="low_confidence",
                     label="Remasking Strategy"
                 )
-            with gr.Row():
-                visualization_delay = gr.Slider(
-                    minimum=0.0, maximum=1.0, value=0.1, step=0.1,
-                    label="Visualization Delay (seconds)"
-                )
+
         
         # Current response text box (hidden)
         current_response = gr.Textbox(
@@ -566,9 +570,6 @@ def create_chatbot_demo():
             visible=False
         )
         
-        # Clear button
-        clear_btn = gr.Button("Clear Conversation")
-        
         # HELPER FUNCTIONS
         def add_message(history, message, response):
             """Add a message pair to the history and return the updated history"""
@@ -576,7 +577,7 @@ def create_chatbot_demo():
             history.append([message, response])
             return history
             
-        def user_message_submitted(message, history_baseline, history_cache, gen_length, steps, delay):
+        def user_message_submitted(message, history_baseline, history_cache, gen_length, steps):
             """Process a submitted user message"""
             # Skip empty messages
             if not message.strip():
@@ -599,7 +600,7 @@ def create_chatbot_demo():
             # Return immediately to update UI with user message
             return history_baseline, history_cache, history_baseline_for_display, history_cache_for_display, message_out, [], [], "", "processing...", "processing...", "processing...", "processing..."
             
-        def baseline_response(history_baseline, gen_length, steps, delay, temperature, block_length, remasking):
+        def baseline_response(history_baseline, gen_length, steps, temperature, block_length, remasking):
             """Generate baseline model response independently"""
             if not history_baseline:
                 return history_baseline, [], "", "wait for generation", "wait for generation"
@@ -617,12 +618,22 @@ def create_chatbot_demo():
                 # Start timing
                 start_time = time.time()
                 
-                # Generate with baseline model
+                # Generate with baseline model and yield states in real-time
                 with torch.no_grad():
-                    vis_states, response_text = generate_response_with_visualization(
+                    generator = generate_response_with_visualization(
                         model_baseline, tokenizer, device_baseline,
                         messages, gen_length, steps, temperature, block_length, remasking
                     )
+                    
+                    # Collect all states and get final text
+                    states = []
+                    for item in generator:
+                        if isinstance(item, list):  # Visualization state
+                            states.append(item)
+                            yield history_baseline, item, "", "processing...", "processing..."
+                        else:  # Final text
+                            response_text = item
+                            break
                 
                 baseline_complete_time = time.time() - start_time
                 generation_time_str = f"{baseline_complete_time:.2f}s"
@@ -636,13 +647,9 @@ def create_chatbot_demo():
                 # Update history
                 history_baseline[-1][1] = response_text
                 
-                # Output results
-                yield history_baseline, vis_states[0], response_text, generation_time_str, throughput_str
-                
-                # Animate generation process
-                for state in vis_states[1:]:
-                    time.sleep(delay)
-                    yield history_baseline, state, response_text, generation_time_str, throughput_str
+                # Final yield with complete information
+                if states:
+                    yield history_baseline, states[-1], response_text, generation_time_str, throughput_str
                     
             except Exception as e:
                 error_msg = f"Error: {str(e)}"
@@ -650,7 +657,7 @@ def create_chatbot_demo():
                 error_vis = [(error_msg, "red")]
                 yield history_baseline, error_vis, error_msg, "Error", "Error"
         
-        def accelerated_response(history_cache, gen_length, steps, delay, temperature, block_length, remasking, threshold):
+        def accelerated_response(history_cache, gen_length, steps, temperature, block_length, remasking, threshold):
             """Generate accelerated model response independently"""
             if not history_cache:
                 return history_cache, [], "", "wait for generation", "wait for generation"
@@ -668,12 +675,22 @@ def create_chatbot_demo():
                 # Start timing
                 start_time = time.time()
                 
-                # Generate with accelerated model
+                # Generate with accelerated model and yield states in real-time
                 with torch.no_grad():
-                    cache_vis_states, cache_response_text = generate_response_with_visualization_cache_and_parallel(
+                    generator = generate_response_with_visualization_cache_and_parallel(
                         model_accelerated, tokenizer, device_accelerated,
                         messages, gen_length, steps, temperature, block_length, remasking, threshold
                     )
+                    
+                    # Collect all states and get final text
+                    states = []
+                    for item in generator:
+                        if isinstance(item, list):  # Visualization state
+                            states.append(item)
+                            yield history_cache, item, "", "processing...", "processing..."
+                        else:  # Final text
+                            cache_response_text = item
+                            break
                 
                 accelerated_complete_time = time.time() - start_time
                 cache_generation_time_str = f"{accelerated_complete_time:.2f}s"
@@ -687,13 +704,9 @@ def create_chatbot_demo():
                 # Update history
                 history_cache[-1][1] = cache_response_text
                 
-                # Output results
-                yield history_cache, cache_vis_states[0], cache_response_text, cache_generation_time_str, cache_throughput_str
-                
-                # Animate generation process
-                for state in cache_vis_states[1:]:
-                    time.sleep(delay)
-                    yield history_cache, state, cache_response_text, cache_generation_time_str, cache_throughput_str
+                # Final yield with complete information
+                if states:
+                    yield history_cache, states[-1], cache_response_text, cache_generation_time_str, cache_throughput_str
                     
             except Exception as e:
                 error_msg = f"Error: {str(e)}"
@@ -736,14 +749,14 @@ def create_chatbot_demo():
         # Step 1: Add user message to history and update UI
         msg_submit = user_input.submit(
             fn=user_message_submitted,
-            inputs=[user_input, chat_history_baseline, chat_history_cache, gen_length, steps, visualization_delay],
+            inputs=[user_input, chat_history_baseline, chat_history_cache, gen_length, steps],
             outputs=[chat_history_baseline, chat_history_cache, chatbot_ui, chatbot_ui_copy, user_input, output_vis, output_vis_copy, current_response, generation_time, throughput, generation_time_copy, throughput_copy]
         )
         
         # Also connect the send button
         send_click = send_btn.click(
             fn=user_message_submitted,
-            inputs=[user_input, chat_history_baseline, chat_history_cache, gen_length, steps, visualization_delay],
+            inputs=[user_input, chat_history_baseline, chat_history_cache, gen_length, steps],
             outputs=[chat_history_baseline, chat_history_cache, chatbot_ui, chatbot_ui_copy, user_input, output_vis, output_vis_copy, current_response, generation_time, throughput, generation_time_copy, throughput_copy]
         )
         
@@ -753,7 +766,7 @@ def create_chatbot_demo():
             fn=baseline_response,
             inputs=[
                 chat_history_baseline, gen_length, steps, 
-                visualization_delay, temperature, block_length, remasking_strategy
+                temperature, block_length, remasking_strategy
             ],
             outputs=[chatbot_ui, output_vis, current_response, generation_time, throughput]
         )
@@ -762,7 +775,7 @@ def create_chatbot_demo():
             fn=baseline_response,
             inputs=[
                 chat_history_baseline, gen_length, steps, 
-                visualization_delay, temperature, block_length, remasking_strategy
+                temperature, block_length, remasking_strategy
             ],
             outputs=[chatbot_ui, output_vis, current_response, generation_time, throughput]
         )
@@ -772,7 +785,7 @@ def create_chatbot_demo():
             fn=accelerated_response,
             inputs=[
                 chat_history_cache, gen_length, steps, 
-                visualization_delay, temperature, block_length, remasking_strategy, threshold
+                temperature, block_length, remasking_strategy, threshold
             ],
             outputs=[chatbot_ui_copy, output_vis_copy, current_response, generation_time_copy, throughput_copy]
         )
@@ -781,7 +794,7 @@ def create_chatbot_demo():
             fn=accelerated_response,
             inputs=[
                 chat_history_cache, gen_length, steps, 
-                visualization_delay, temperature, block_length, remasking_strategy, threshold
+                temperature, block_length, remasking_strategy, threshold
             ],
             outputs=[chatbot_ui_copy, output_vis_copy, current_response, generation_time_copy, throughput_copy]
         )
