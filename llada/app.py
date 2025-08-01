@@ -470,7 +470,7 @@ def create_chatbot_demo():
                 clear_btn = gr.Button("Clear Conversation", scale=1)
         
         # Duplicate conversation interface
-        gr.Markdown("## Fast-dLLM Accelerated")
+        gr.Markdown("## Fast-dLLM Accelerated (Deployed on A6000)")
         with gr.Row():
             with gr.Column(scale=2):
                 chatbot_ui_copy = gr.Chatbot(label="Conversation (Fast-dLLM Accelerated)", height=300)
@@ -495,7 +495,7 @@ def create_chatbot_demo():
         
         # Add separator line
         gr.Markdown("---")
-        gr.Markdown("## LLaDA Baseline")
+        gr.Markdown("## LLaDA Baseline (Deployed on A6000)")
         with gr.Row():
             with gr.Column(scale=2):
                 chatbot_ui = gr.Chatbot(label="Conversation", height=300)
